@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Resume Editor</title>
+<style>
+  :root {
+    --bg: #e9ecef; --panel: #fff; --ink: #1d232b; --muted: #6a7480;
+    --line: #d5dae0; --accent: #1f4e79; --accent-ink: #fff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  /* Toolbar */
+  .toolbar {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  .toolbar .spacer { flex: 1; }
+  button, select {
+    font: inherit; padding: 6px 12px; border-radius: 6px;
+    border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  select { max-width: 240px; }
+  #status { color: var(--muted); font-size: 12px; min-width: 70px; }
+
+  /* Layout */
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; }
+  .editor { display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--panel); min-height: 0; }
+  textarea {
+    flex: 1; width: 100%; resize: none; border: 0; padding: 16px;
+    font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--ink); background: transparent; tab-size: 2;
+  }
+  .hint { padding: 6px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  .stage { overflow: auto; padding: 24px; min-height: 0; }
+
+  /* Resume page */
+  #preview {
+    max-width: 8.5in; min-height: 11in; margin: 0 auto; padding: 0.6in 0.7in;
+    background: #fff; box-shadow: 0 2px 14px rgba(0,0,0,.12);
+    font: 10.5pt/1.45 Georgia, "Times New Roman", serif; color: #111;
+  }
+  #preview h1 { font-size: 22pt; margin: 0 0 2px; text-align: center; letter-spacing: .5px; }
+  #preview h1 + p { text-align: center; color: #444; margin-bottom: 10px; }
+  #preview h2 {
+    font-size: 10.5pt; margin: 14px 0 6px; padding-bottom: 2px;
+    border-bottom: 1.5px solid #111; text-transform: uppercase; letter-spacing: .6px;
+  }
+  #preview h3 { font-size: 10.5pt; margin: 8px 0 2px; }
+  #preview p { margin: 0 0 4px; }
+  #preview ul { margin: 2px 0 6px; padding-left: 18px; }
+  #preview li { margin: 1px 0; }
+  #preview a { color: inherit; }
+
+  /* Mobile: stack panes */
+  @media (max-width: 800px) {
+    main { grid-template-columns: 1fr; grid-template-rows: 40% 60%; }
+    .editor { border-right: 0; border-bottom: 1px solid var(--line); }
+    .stage { padding: 10px; }
+    #preview { padding: 24px 20px; min-height: 0; }
+  }
+
+  /* Print: only the resume */
+  @page { margin: 0.5in; }
+  @media print {
+    body { display: block; height: auto; background: #fff; }
+    .toolbar, .editor, .hint { display: none !important; }
+    main { display: block; }
+    .stage { overflow: visible; padding: 0; }
+    #preview { box-shadow: none; margin: 0; padding: 0; max-width: none; min-height: 0; }
+    #preview h2, #preview h3 { break-after: avoid; }
+    #preview li, #preview p { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <button class="primary" id="pdf">Download PDF</button>
+  <button id="save">Save Version</button>
+  <select id="versions" aria-label="Saved versions"></select>
+  <button id="load">Load</button>
+  <button id="del">Delete</button>
+  <span class="spacer"></span>
+  <span id="status" aria-live="polite"></span>
+</div>
+
+<main>
+  <section class="editor">
+    <textarea id="src" spellcheck="false" aria-label="Resume text"></textarea>
+    <div class="hint"># Name &nbsp; ## Section &nbsp; ### Role &nbsp; - bullet &nbsp; **bold** &nbsp; *italic* &nbsp; [text](https://link)</div>
+  </section>
+  <section class="stage"><article id="preview"></article></section>
+</main>
+
+<script>
+(() => {
+  const DRAFT = 'resume.draft', VERS = 'resume.versions';
+  const $ = id => document.getElementById(id);
+  const src = $('src'), preview = $('preview'), sel = $('versions'), status = $('status');
+
+  const SAMPLE = `# Your Name
+City, Country | you@email.com | +00 00000 00000 | [linkedin.com/in/you](https://linkedin.com/in/you)
+
+## Summary
+Results-driven professional with experience in **your field**. Replace this text with your own.
+
+## Experience
+### Job Title, Company *(Jan 2024 – Present)*
+- Led **X** that improved **Y** by 30%
+- Built and shipped Z used by 1,000+ users
+
+## Education
+### B.E. in Your Degree, Your College *(2022 – 2026)*
+- CGPA: 0.00 / 10
+
+## Skills
+- **Languages:** JavaScript, Python
+- **Tools:** Git, Docker, Figma
+`;
+
+  // ---------- storage helpers (fail-safe) ----------
+  const read = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+  const write = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } };
+
+  // ---------- markdown-lite -> HTML ----------
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const inline = s => esc(s)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*(?!\s)(.+?)\*/g, '$1<em>$2</em>')
+    .replace(/\[(.+?)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
+
+  function toHTML(text) {
+    let out = '', inList = false;
+    const close = () => { if (inList) { out += '</ul>'; inList = false; } };
+    for (const raw of text.split('\n')) {
+      const line = raw.trimEnd(); let m;
+      if (!line.trim()) { close(); continue; }
+      if ((m = line.match(/^(#{1,3})\s+(.*)/))) {
+        close(); out += `<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`;
+      } else if ((m = line.match(/^\s*[-*•]\s+(.*)/))) {
+        if (!inList) { out += '<ul>'; inList = true; }
+        out += `<li>${inline(m[1])}</li>`;
+      } else {
+        close(); out += `<p>${inline(line)}</p>`;
+      }
+    }
+    close();
+    return out;
+  }
+
+  // ---------- render (coalesced to one per frame) ----------
+  let queued = false;
+  const render = () => { preview.innerHTML = toHTML(src.value); queued = false; };
+  const schedule = () => { if (!queued) { queued = true; requestAnimationFrame(render); } };
+
+  let draftTimer;
+  src.addEventListener('input', () => {
+    schedule();
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => write(DRAFT, src.value), 400);
+  });
+
+  // Tab inserts two spaces instead of leaving the field
+  src.addEventListener('keydown', e => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      src.setRangeText('  ', src.selectionStart, src.selectionEnd, 'end');
+      src.dispatchEvent(new Event('input'));
+    }
+  });
+
+  // ---------- versions ----------
+  const fmt = ts => new Date(ts).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  const flash = msg => { status.textContent = msg; clearTimeout(flash.t); flash.t = setTimeout(() => status.textContent = '', 2000); };
+
+  function refresh(selectId) {
+    const list = read(VERS, []);
+    sel.innerHTML = list.length
+      ? list.map(v => `<option value="${v.id}">${esc(v.name)} — ${fmt(v.ts)}</option>`).join('')
+      : '<option value="">No saved versions</option>';
+    if (selectId) sel.value = selectId;
+  }
+
+  $('save').onclick = () => {
+    const list = read(VERS, []);
+    const name = prompt('Version name:', `Version ${list.length + 1}`);
+    if (name === null) return;
+    const v = { id: String(Date.now()), name: name.trim() || `Version ${list.length + 1}`, ts: Date.now(), text: src.value };
+    list.unshift(v);
+    flash(write(VERS, list) ? 'Saved' : 'Storage full');
+    refresh(v.id);
+  };
+
+  $('load').onclick = () => {
+    const v = read(VERS, []).find(x => x.id === sel.value);
+    if (!v) return;
+    src.value = v.text; render(); write(DRAFT, v.text); flash('Loaded');
+  };
+
+  $('del').onclick = () => {
+    const list = read(VERS, []), v = list.find(x => x.id === sel.value);
+    if (!v || !confirm(`Delete "${v.name}"?`)) return;
+    write(VERS, list.filter(x => x.id !== v.id)); refresh(); flash('Deleted');
+  };
+
+  // ---------- PDF via browser print (selectable text, ATS-friendly) ----------
+  $('pdf').onclick = () => {
+    const prev = document.title, h1 = preview.querySelector('h1');
+    document.title = (h1 ? h1.textContent.trim() : 'Resume') + ' - Resume';
+    render();
+    window.print();
+    document.title = prev;
+  };
+
+  // ---------- init ----------
+  src.value = read(DRAFT, null) ?? SAMPLE;
+  render();
+  refresh();
+})();
+</script>
+</body>
+</html>
